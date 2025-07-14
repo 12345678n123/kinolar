@@ -120,8 +120,82 @@ const removeMovieScene = new Scenes.WizardScene(
   }
 );
 
+// Yangi scene: foydalanuvchilarga xabar yuborish
+const sendMessageScene = new Scenes.WizardScene(
+  'sendMessageScene',
+  (ctx) => {
+    ctx.reply('Xabar yuborish uchun kontent yuboring (video, rasm, dokument yoki matn):');
+    return ctx.wizard.next();
+  },
+  async (ctx) => {
+    try {
+      const users = getUsers();
+      let sentCount = 0;
+      let failedCount = 0;
+      
+      // Xabarni kanalga yuborish
+      try {
+        if (ctx.message.video) {
+          await ctx.telegram.sendVideo(CHANNEL_ID, ctx.message.video.file_id, {
+            caption: ctx.message.caption || ''
+          });
+        } else if (ctx.message.photo) {
+          await ctx.telegram.sendPhoto(CHANNEL_ID, ctx.message.photo[ctx.message.photo.length - 1].file_id, {
+            caption: ctx.message.caption || ''
+          });
+        } else if (ctx.message.document) {
+          await ctx.telegram.sendDocument(CHANNEL_ID, ctx.message.document.file_id, {
+            caption: ctx.message.caption || ''
+          });
+        } else if (ctx.message.text) {
+          await ctx.telegram.sendMessage(CHANNEL_ID, ctx.message.text);
+        }
+      } catch (channelError) {
+        console.error('Channel send error:', channelError);
+        await ctx.reply('❌ Kanalga xabar yuborishda xatolik yuz berdi.');
+      }
+      
+      // Har bir foydalanuvchiga xabar yuborish
+      for (const user of users) {
+        try {
+          if (ctx.message.video) {
+            await ctx.telegram.sendVideo(user.id, ctx.message.video.file_id, {
+              caption: ctx.message.caption || ''
+            });
+          } else if (ctx.message.photo) {
+            await ctx.telegram.sendPhoto(user.id, ctx.message.photo[ctx.message.photo.length - 1].file_id, {
+              caption: ctx.message.caption || ''
+            });
+          } else if (ctx.message.document) {
+            await ctx.telegram.sendDocument(user.id, ctx.message.document.file_id, {
+              caption: ctx.message.caption || ''
+            });
+          } else if (ctx.message.text) {
+            await ctx.telegram.sendMessage(user.id, ctx.message.text);
+          }
+          sentCount++;
+        } catch (error) {
+          console.error(`Failed to send to user ${user.id}:`, error);
+          failedCount++;
+        }
+        
+        // Har 10 ta xabardan keyin 1 sekund kutish (rate limit uchun)
+        if (sentCount % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      await ctx.reply(`✅ Xabar muvaffaqiyatli yuborildi!\n\nJami yuborildi: ${sentCount}\nYuborilmadi: ${failedCount}\n\nKanalga ham yuborildi.`);
+    } catch (error) {
+      console.error('Send message error:', error);
+      await ctx.reply('❌ Xatolik yuz berdi. Iltimos, qayta urinib ko\'ring.');
+    }
+    return ctx.scene.leave();
+  }
+);
+
 // Initialize bot and stage
-const stage = new Scenes.Stage([addMovieScene, removeMovieScene]);
+const stage = new Scenes.Stage([addMovieScene, removeMovieScene, sendMessageScene]);
 const bot = new Telegraf(BOT_TOKEN);
 
 // Middleware
@@ -149,6 +223,7 @@ bot.start(async (ctx) => {
       Markup.inlineKeyboard([
         [Markup.button.callback('🎥 Kino qo\'shish', 'add_movie')],
         [Markup.button.callback('🗑 Kino o\'chirish', 'remove_movie')],
+        [Markup.button.callback('📩 Foydalanuvchilarga xabar yuborish', 'send_message')],
         [Markup.button.callback('📊 Statistika', 'stats')]
       ])
     );
@@ -178,7 +253,7 @@ bot.action('check_subscription', async (ctx) => {
     
     if (isSubscribed) {
       await ctx.replyWithHTML(
-        `<i>✅ Rahmat! Endi kino kodini kiriting:</i>`
+        `<i>Salom ${ctx.from.first_name}\nKino kodini kiriting</i>`
       );
       await ctx.deleteMessage();
     } else {
@@ -199,6 +274,7 @@ bot.action('check_subscription', async (ctx) => {
 // Admin action handlers
 bot.action('add_movie', (ctx) => ctx.scene.enter('addMovieScene'));
 bot.action('remove_movie', (ctx) => ctx.scene.enter('removeMovieScene'));
+bot.action('send_message', (ctx) => ctx.scene.enter('sendMessageScene'));
 bot.action('stats', async (ctx) => {
   const users = getUsers();
   let message = `📊 <b>Statistika</b>\n\nJami foydalanuvchilar: ${users.length}\n\n`;
@@ -247,10 +323,6 @@ bot.on('text', async (ctx) => {
       } else if (movie.type === 'document') {
         await ctx.replyWithDocument(movie.fileId, { caption: movie.caption || '' });
       }
-      
-      await ctx.replyWithHTML(
-        `<i>🎬 Hurmatli ${ctx.from.first_name}, yana kino ko'rish uchun boshqa kod kiriting.</i>`
-      );
     } catch (error) {
       console.error('Movie send error:', error);
       await ctx.reply('❌ Kino yuborishda xatolik. Iltimos, keyinroq urinib ko\'ring.');
@@ -264,7 +336,7 @@ bot.on('text', async (ctx) => {
 // Admin media handler
 bot.on(['video', 'photo', 'document'], (ctx) => {
   if (ctx.from.id.toString() === ADMIN_ID) {
-    ctx.reply('ℹ️ Media qabul qilindi. Kino qo\'shish uchun "Kino qo\'shish" tugmasini bosing.');
+    ctx.reply('ℹ️ Media qabul qilindi. Kino qo\'shish uchun "Kino qo\'shish" tugmasini bosing yoki foydalanuvchilarga yuborish uchun "Foydalanuvchilarga xabar yuborish" tugmasini bosing.');
   }
 });
 
@@ -274,21 +346,11 @@ bot.catch((err, ctx) => {
   ctx.reply('❌ Botda xatolik yuz berdi. Iltimos, keyinroq urinib ko\'ring.');
 });
 
-// Start the bot
-bot.launch()
-  .then(() => console.log('🤖 Bot ishga tushdi!'))
-  .catch(err => console.error('Botni ishga tushirishda xatolik:', err));
-
-// Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
-// Add this at the top of your file
+// Express server setup
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Add this right before bot.launch()
 app.get('/', (req, res) => {
   res.send('🤖 Bot is running!');
 });
@@ -297,3 +359,11 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
+bot.launch()
+  .then(() => console.log('🤖 Bot ishga tushdi!'))
+  .catch(err => console.error('Botni ishga tushirishda xatolik:', err));
+
+// Enable graceful stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
